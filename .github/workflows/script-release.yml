@@ -1,0 +1,39 @@
+name: Script release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check script
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $PWD 'SpotifyAntiPause.ps1'), [ref]$tokens, [ref]$errors)
+          if ($errors.Count) { throw ($errors | Out-String) }
+          $function = $ast.Find({ param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Load-NativePatch'
+          }, $true)
+          . ([scriptblock]::Create($function.Extent.Text))
+          Load-NativePatch
+          $resolved = [SpotifyNativePatch]::RealPath((Join-Path $PWD 'SpotifyAntiPause.ps1'))
+          if (-not (Test-Path -LiteralPath $resolved)) { throw 'Installed path resolution failed' }
+      - name: Publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $version = (Select-String -Path SpotifyAntiPause.ps1 -Pattern '^\$Version=''([^'']+)''$').Matches[0].Groups[1].Value
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid version' }
+          gh release view "v$version" *> $null
+          if ($LASTEXITCODE -eq 0) { exit 0 }
+          gh release create "v$version" --target $env:GITHUB_SHA --title "Spotify Anti-Pause $version" --notes 'Download the PowerShell script below.' SpotifyAntiPause.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
